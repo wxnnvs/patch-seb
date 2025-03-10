@@ -47,7 +47,7 @@ func main() {
 
 	urls := []string{}
 	for _, asset := range release.Assets {
-		if !strings.Contains(asset.BrowserDownloadURL, "patch-seb.exe") {
+		if !strings.Contains(asset.BrowserDownloadURL, "exe") {
 			urls = append(urls, asset.BrowserDownloadURL)
 		}
 	}
