@@ -12,6 +12,12 @@ Patch-SEB is a tool designed to patch Safe Exam Browser (SEB) on Windows. This t
 
 To build the project yourself, follow these steps:
 
+1. **Install Go and Fyne**
+    ```
+    https://go.dev/
+    https://docs.fyne.io/started/
+    ```
+
 1. **Clone the Repository**:
     ```sh
     git clone https://github.com/wxnnvs/patch-seb.git
