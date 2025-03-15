@@ -10,16 +10,28 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"syscall"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
+	"golang.org/x/sys/windows"
 )
 
+type Release struct {
+	Assets []struct {
+		BrowserDownloadURL string `json:"browser_download_url"`
+	} `json:"assets"`
+}
+
 func main() {
+	if !isAdmin() {
+		runMeElevated()
+	}
 
 	// create app and window
 	a := app.New()
@@ -44,7 +56,7 @@ func main() {
 
 	label := widget.NewLabel("Selected: ")
 
-	button := widget.NewButton("Select", func() {
+	button := widget.NewButton("Install", func() {
 		patch(sebVersionWidget, patchVersionWidget, label, w)
 	})
 
@@ -219,6 +231,78 @@ func patch(sebVersionWidget *widget.Select, patchVersionWidget *widget.Select, l
 
 	// Update the label
 	label.SetText("SEB Version: " + sebVersionSelected + "\nPatch Version: " + patchVersionSelected)
+
+	installing := dialog.NewCustomWithoutButtons("Installing...", widget.NewLabel("Please wait"), w)
+	installing.Show()
+
+	url := "https://api.github.com/repos/wxnnvs/seb-win-bypass/releases/latest"
+	resp, err := http.Get(url)
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+
+	var release Release
+	err = json.Unmarshal(body, &release)
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+
+	urls := []string{}
+	for _, asset := range release.Assets {
+		if !strings.Contains(asset.BrowserDownloadURL, "exe") {
+			urls = append(urls, asset.BrowserDownloadURL)
+		}
+	}
+
+	for _, url := range urls {
+		err := downloadFile(url)
+		if err != nil {
+			fmt.Println("Error:", err)
+		}
+	}
+
+	movedFiles := []string{}
+	for _, url := range urls {
+		fileName := filepath.Base(url)
+		tempDir := os.TempDir()
+		tempFilePath := filepath.Join(tempDir, fileName)
+
+		destinationDir := "C:\\Program Files\\SafeExamBrowser\\Application"
+		destinationFilePath := filepath.Join(destinationDir, fileName)
+
+		err := os.MkdirAll(destinationDir, 0755)
+		if err != nil {
+			fmt.Println("Error:", err)
+			continue
+		}
+
+		err = os.Rename(tempFilePath, destinationFilePath)
+		if err != nil {
+			fmt.Println("Error:", err)
+		} else {
+			movedFiles = append(movedFiles, destinationFilePath)
+		}
+	}
+
+	if len(movedFiles) > 0 {
+		fmt.Println("Successfully installed:")
+		for _, file := range movedFiles {
+			fmt.Println(file)
+		}
+		installing.Hide()
+		dialog.ShowCustom("Success", "Close", widget.NewLabel("Successfully patched your SEB installation!"), w)
+	} else {
+		fmt.Println("No files were installed.")
+	}
 }
 
 func generateMD5() string {
@@ -269,4 +353,51 @@ func updatePatchSelector(sebVersionWidget *widget.Select, patchVersionWidget *wi
 	patchVersionWidget.Options = patchVersion
 	patchVersionWidget.Selected = ""
 	patchVersionWidget.Refresh()
+}
+
+func downloadFile(url string) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	tempDir := os.TempDir()
+	fileName := filepath.Base(url)
+	filePath := filepath.Join(tempDir, fileName)
+
+	out, err := os.Create(filePath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, resp.Body)
+	return err
+}
+
+func isAdmin() bool {
+	cmd := exec.Command("net", "session")
+	err := cmd.Run()
+	return err == nil
+}
+
+func runMeElevated() {
+	verb := "runas"
+	exe, _ := os.Executable()
+	cwd, _ := os.Getwd()
+	args := strings.Join(os.Args[1:], " ")
+
+	verbPtr, _ := syscall.UTF16PtrFromString(verb)
+	exePtr, _ := syscall.UTF16PtrFromString(exe)
+	cwdPtr, _ := syscall.UTF16PtrFromString(cwd)
+	argPtr, _ := syscall.UTF16PtrFromString(args)
+
+	var showCmd int32 = 1 //SW_NORMAL
+
+	err := windows.ShellExecute(0, verbPtr, exePtr, argPtr, cwdPtr, showCmd)
+	if err != nil {
+		fmt.Println(err)
+	}
+	os.Exit(0)
 }
