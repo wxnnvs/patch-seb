@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -29,6 +30,7 @@ type Release struct {
 }
 
 func main() {
+
 	if !isAdmin() {
 		runMeElevated()
 	}
@@ -113,10 +115,14 @@ func main() {
 		button,
 		label))
 
-	w.ShowAndRun()
+	ShowAndRunWithTask(func() {
+		internetError(w)
+	}, w)
+
 }
 
 func fetchLatestPatchVersion() string {
+
 	// Fetch the latest release from the GitHub API
 	resp, err := http.Get("https://wxnnvs.ftp.sh/un-seb/latest.json")
 	if err != nil {
@@ -148,6 +154,7 @@ func fetchLatestPatchVersion() string {
 }
 
 func setPatchVersion(sebVersion string) []string {
+
 	patchVersion := []string{}
 
 	// Fetch the latest patch version
@@ -197,6 +204,8 @@ func setPatchVersion(sebVersion string) []string {
 
 func patch(sebVersionWidget *widget.Select, patchVersionWidget *widget.Select, label *widget.Label, w fyne.Window) {
 
+	internetError(w)
+
 	// Get the selected option
 	sebVersionSelected := sebVersionWidget.Selected
 	patchVersionSelected := patchVersionWidget.Selected
@@ -221,87 +230,99 @@ func patch(sebVersionWidget *widget.Select, patchVersionWidget *widget.Select, l
 			if b {
 				// Continue with the selected patch version
 				fmt.Println("Continuing with patch version:", patchVersionSelected)
+
+				// The actual patching process
+
+				// Update the label
+				label.SetText("SEB Version: " + sebVersionSelected + "\nPatch Version: " + patchVersionSelected)
+
+				fetching := dialog.NewCustomWithoutButtons("Fetching assets...", widget.NewLabel("Please wait"), w)
+				fetching.Show()
+
+				url := "https://api.github.com/repos/wxnnvs/seb-win-bypass/releases/latest"
+				resp, err := http.Get(url)
+				if err != nil {
+					fmt.Println("Error:", err)
+					return
+				}
+				defer resp.Body.Close()
+
+				body, err := io.ReadAll(resp.Body)
+				if err != nil {
+					fmt.Println("Error:", err)
+					return
+				}
+
+				var release Release
+				err = json.Unmarshal(body, &release)
+				if err != nil {
+					fmt.Println("Error:", err)
+					return
+				}
+
+				urls := []string{}
+				for _, asset := range release.Assets {
+					if !strings.Contains(asset.BrowserDownloadURL, "exe") {
+						urls = append(urls, asset.BrowserDownloadURL)
+					}
+				}
+				fetching.Hide()
+
+				// Download the files and move them to the SEB installation directory
+				installing := dialog.NewCustomWithoutButtons("Installing...", widget.NewLabel("Please wait"), w)
+				installing.Show()
+
+				for _, url := range urls {
+					err := downloadFile(url)
+					if err != nil {
+						fmt.Println("Error:", err)
+					}
+				}
+
+				movedFiles := []string{}
+				for _, url := range urls {
+					fileName := filepath.Base(url)
+					tempDir := os.TempDir()
+					tempFilePath := filepath.Join(tempDir, fileName)
+
+					destinationDir := "C:\\Program Files\\SafeExamBrowser\\Application"
+					destinationFilePath := filepath.Join(destinationDir, fileName)
+
+					err := os.MkdirAll(destinationDir, 0755)
+					if err != nil {
+						fmt.Println("Error:", err)
+						continue
+					}
+
+					err = os.Rename(tempFilePath, destinationFilePath)
+					if err != nil {
+						fmt.Println("Error:", err)
+					} else {
+						movedFiles = append(movedFiles, destinationFilePath)
+					}
+				}
+
+				if len(movedFiles) > 0 {
+					fmt.Println("Successfully installed:")
+					for _, file := range movedFiles {
+						fmt.Println(file)
+					}
+					installing.Hide()
+					dialog.ShowCustom("Success", "Close", widget.NewLabel("Successfully patched your SEB installation!"), w)
+					return
+				} else {
+					dialog.ShowCustom("Error", "Close", widget.NewLabel("Failed to patch SEB!\nAre you connected to the internet?"), w)
+					return
+				}
+
 			} else {
 				// Handle the cancel action
 				fmt.Println("Action canceled")
 				patchVersionWidget.Selected = ""
+				patchVersionWidget.Refresh()
+				return
 			}
 		}, w)
-	}
-
-	// Update the label
-	label.SetText("SEB Version: " + sebVersionSelected + "\nPatch Version: " + patchVersionSelected)
-
-	installing := dialog.NewCustomWithoutButtons("Installing...", widget.NewLabel("Please wait"), w)
-	installing.Show()
-
-	url := "https://api.github.com/repos/wxnnvs/seb-win-bypass/releases/latest"
-	resp, err := http.Get(url)
-	if err != nil {
-		fmt.Println("Error:", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		fmt.Println("Error:", err)
-		return
-	}
-
-	var release Release
-	err = json.Unmarshal(body, &release)
-	if err != nil {
-		fmt.Println("Error:", err)
-		return
-	}
-
-	urls := []string{}
-	for _, asset := range release.Assets {
-		if !strings.Contains(asset.BrowserDownloadURL, "exe") {
-			urls = append(urls, asset.BrowserDownloadURL)
-		}
-	}
-
-	for _, url := range urls {
-		err := downloadFile(url)
-		if err != nil {
-			fmt.Println("Error:", err)
-		}
-	}
-
-	movedFiles := []string{}
-	for _, url := range urls {
-		fileName := filepath.Base(url)
-		tempDir := os.TempDir()
-		tempFilePath := filepath.Join(tempDir, fileName)
-
-		destinationDir := "C:\\Program Files\\SafeExamBrowser\\Application"
-		destinationFilePath := filepath.Join(destinationDir, fileName)
-
-		err := os.MkdirAll(destinationDir, 0755)
-		if err != nil {
-			fmt.Println("Error:", err)
-			continue
-		}
-
-		err = os.Rename(tempFilePath, destinationFilePath)
-		if err != nil {
-			fmt.Println("Error:", err)
-		} else {
-			movedFiles = append(movedFiles, destinationFilePath)
-		}
-	}
-
-	if len(movedFiles) > 0 {
-		fmt.Println("Successfully installed:")
-		for _, file := range movedFiles {
-			fmt.Println(file)
-		}
-		installing.Hide()
-		dialog.ShowCustom("Success", "Close", widget.NewLabel("Successfully patched your SEB installation!"), w)
-	} else {
-		fmt.Println("No files were installed.")
 	}
 }
 
@@ -400,4 +421,27 @@ func runMeElevated() {
 		fmt.Println(err)
 	}
 	os.Exit(0)
+}
+
+func checkInternet() bool {
+	// check internet connection
+	_, err := http.Get("https://api.github.com")
+	return err == nil
+}
+
+func internetError(w fyne.Window) {
+	if !checkInternet() {
+		noInternet := dialog.NewCustomWithoutButtons("Connection failed.", widget.NewLabel("Please connect to the internet."), w)
+		noInternet.Show()
+		for !checkInternet() {
+			time.Sleep(1 * time.Second) // Add a delay to avoid busy waiting
+		}
+		noInternet.Hide()
+		detectVersion()
+	}
+}
+
+func ShowAndRunWithTask(task func(), w fyne.Window) {
+	go task() // Run the task concurrently
+	w.ShowAndRun()
 }
