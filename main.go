@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -21,6 +22,10 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 	"golang.org/x/sys/windows"
+)
+
+const (
+	version = 4
 )
 
 type Release struct {
@@ -61,6 +66,29 @@ func main() {
 	button := widget.NewButton("Install", func() {
 		patch(sebVersionWidget, patchVersionWidget, label, w)
 	})
+
+	// check for patcher updates
+	if checkLatestRelease(w) > version {
+		dialog.ShowCustomConfirm("New Update", "Continue", "Cancel",
+			widget.NewLabel("A new update is available.\nDo you want to update?"),
+			func(b bool) {
+				if b {
+					fmt.Println("Updating...")
+					updating := dialog.NewCustomWithoutButtons("Updating...", widget.NewLabel("Installing newer version.\nPlease wait."), w)
+					updating.Show()
+					err := upgrade()
+					if err != nil {
+						fmt.Println("Error:", err)
+						// show error
+						updating.Hide()
+						dialog.ShowCustom("Error", "Close", widget.NewLabel("Failed to update patcher.\n"+err.Error()), w)
+					}
+				} else {
+					// Handle the cancel action
+					fmt.Println("Action canceled")
+				}
+			}, w)
+	}
 
 	// Detect the installed version
 	installedVersion := detectVersion()
@@ -444,4 +472,159 @@ func internetError(w fyne.Window) {
 func ShowAndRunWithTask(task func(), w fyne.Window) {
 	go task() // Run the task concurrently
 	w.ShowAndRun()
+}
+
+// check latest release
+func checkLatestRelease(w fyne.Window) int {
+	internetError(w)
+
+	url := "https://api.github.com/repos/wxnnvs/patch-seb/releases/latest"
+	resp, err := http.Get(url)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+
+	// Parse the release response to get the tag name
+	var release struct {
+		TagName string `json:"tag_name"`
+	}
+
+	// Decode the response JSON
+	decoder := json.NewDecoder(resp.Body)
+	if err := decoder.Decode(&release); err != nil {
+		return 0
+	}
+
+	versionStr := strings.TrimPrefix(release.TagName, "v")
+
+	version, err := strconv.Atoi(versionStr)
+	if err != nil {
+		fmt.Println("Error converting version:", err)
+		return 0
+	}
+	return version
+}
+
+func upgrade() error {
+	// Step 1: Fetch the latest release info from GitHub
+	latestRelease, err := fetchLatestRelease()
+	if err != nil {
+		return err
+	}
+
+	// Step 2: Download the new .exe from the release
+	err = downloadExe(latestRelease)
+	if err != nil {
+		return err
+	}
+
+	// Step 3: Schedule the replacement after the current process exits
+	err = scheduleReplacement()
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("Upgrade scheduled. Restarting application...")
+	return nil
+}
+
+func fetchLatestRelease() (string, error) {
+	url := "https://api.github.com/repos/wxnnvs/patch-seb/releases/latest"
+	resp, err := http.Get(url)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch release info: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Parse the release response to get the asset URL
+	var release struct {
+		Assets []struct {
+			Name string `json:"name"`
+			URL  string `json:"browser_download_url"`
+		} `json:"assets"`
+	}
+
+	// Decode the response JSON
+	decoder := json.NewDecoder(resp.Body)
+	if err := decoder.Decode(&release); err != nil {
+		return "", fmt.Errorf("failed to decode release info: %v", err)
+	}
+
+	// Find the .exe asset in the release
+	for _, asset := range release.Assets {
+		if asset.Name == "patch-seb.exe" {
+			return asset.URL, nil
+		}
+	}
+
+	return "", fmt.Errorf("no .exe asset found in latest release")
+}
+
+func downloadExe(downloadURL string) error {
+	// Step 2: Download the file
+	resp, err := http.Get(downloadURL)
+	if err != nil {
+		return fmt.Errorf("failed to download file: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Step 3: Save the .exe to the specified path
+	filePath := filepath.Join("./", "patch-seb-temp.exe")
+	outFile, err := os.Create(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to create file: %v", err)
+	}
+	defer outFile.Close()
+
+	_, err = io.Copy(outFile, resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to copy content: %v", err)
+	}
+
+	fmt.Printf("Downloaded new executable to %s\n", filePath)
+	return nil
+}
+
+func scheduleReplacement() error {
+	// Step 4: Schedule the replacement of the current executable
+	// You cannot overwrite the running executable, so you will need to schedule the replacement on exit
+	// This can be achieved by running a new process to replace the current .exe with the new one after exit
+
+	currentExe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("could not get current executable: %v", err)
+	}
+
+	// Create a temporary batch file to handle the copying, deletion of .exe, and deleting the batch file
+	batchFilePath := filepath.Join("./", "replace_and_cleanup.bat")
+	batchContent := fmt.Sprintf(`
+@echo off
+timeout /t 3
+copy /Y "%s" "%s"
+del /f "%s"
+start "" "%s"
+del /f "%s"
+exit
+`, filepath.Join("./", "patch-seb-temp.exe"), currentExe, filepath.Join("./", "patch-seb-temp.exe"), "%~dp0patch-seb.exe", batchFilePath)
+
+	err = os.WriteFile(batchFilePath, []byte(batchContent), 0644)
+	if err != nil {
+		return fmt.Errorf("failed to create batch file: %v", err)
+	}
+
+	// Step 5: Run the batch file that will perform the replacement and cleanup
+	cmd := exec.Command("cmd", "/C", batchFilePath)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow: true,
+	}
+	err = cmd.Start()
+	if err != nil {
+		return fmt.Errorf("failed to start batch file command: %v", err)
+	}
+
+	// Exit the current process so the new one can replace it
+	os.Exit(0)
+
+	return nil
 }
