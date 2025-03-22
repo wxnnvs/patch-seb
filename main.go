@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	version = 4
+	version = 5
 )
 
 type Release struct {
@@ -351,6 +351,90 @@ func patch(sebVersionWidget *widget.Select, patchVersionWidget *widget.Select, l
 				return
 			}
 		}, w)
+	} else {
+		// The actual patching process
+
+		// Update the label
+		label.SetText("SEB Version: " + sebVersionSelected + "\nPatch Version: " + patchVersionSelected)
+
+		fetching := dialog.NewCustomWithoutButtons("Fetching assets...", widget.NewLabel("Please wait"), w)
+		fetching.Show()
+
+		url := "https://api.github.com/repos/wxnnvs/seb-win-bypass/releases/latest"
+		resp, err := http.Get(url)
+		if err != nil {
+			fmt.Println("Error:", err)
+			return
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			fmt.Println("Error:", err)
+			return
+		}
+
+		var release Release
+		err = json.Unmarshal(body, &release)
+		if err != nil {
+			fmt.Println("Error:", err)
+			return
+		}
+
+		urls := []string{}
+		for _, asset := range release.Assets {
+			if !strings.Contains(asset.BrowserDownloadURL, "exe") {
+				urls = append(urls, asset.BrowserDownloadURL)
+			}
+		}
+		fetching.Hide()
+
+		// Download the files and move them to the SEB installation directory
+		installing := dialog.NewCustomWithoutButtons("Installing...", widget.NewLabel("Please wait"), w)
+		installing.Show()
+
+		for _, url := range urls {
+			err := downloadFile(url)
+			if err != nil {
+				fmt.Println("Error:", err)
+			}
+		}
+
+		movedFiles := []string{}
+		for _, url := range urls {
+			fileName := filepath.Base(url)
+			tempDir := os.TempDir()
+			tempFilePath := filepath.Join(tempDir, fileName)
+
+			destinationDir := "C:\\Program Files\\SafeExamBrowser\\Application"
+			destinationFilePath := filepath.Join(destinationDir, fileName)
+
+			err := os.MkdirAll(destinationDir, 0755)
+			if err != nil {
+				fmt.Println("Error:", err)
+				continue
+			}
+
+			err = os.Rename(tempFilePath, destinationFilePath)
+			if err != nil {
+				fmt.Println("Error:", err)
+			} else {
+				movedFiles = append(movedFiles, destinationFilePath)
+			}
+		}
+
+		if len(movedFiles) > 0 {
+			fmt.Println("Successfully installed:")
+			for _, file := range movedFiles {
+				fmt.Println(file)
+			}
+			installing.Hide()
+			dialog.ShowCustom("Success", "Close", widget.NewLabel("Successfully patched your SEB installation!"), w)
+			return
+		} else {
+			dialog.ShowCustom("Error", "Close", widget.NewLabel("Failed to patch SEB!\nAre you connected to the internet?"), w)
+			return
+		}
 	}
 }
 
